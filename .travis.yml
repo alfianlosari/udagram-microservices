@@ -1,0 +1,83 @@
+os: linux
+dist: bionic
+language: python
+python:
+  - "3.7"
+
+services: docker
+
+env:
+  global:
+    - PATH=$HOME/.local/bin:$PATH
+    - DOCKER_COMPOSE_VERSION=1.23.2
+    # Uncomment bellow to provide rollback to specific revision
+    # - ROLLBACK_REVISION=10
+  
+before_install:
+  - docker -v && docker-compose -v
+  - sudo rm /usr/local/bin/docker-compose
+  - curl -L https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-`uname -s`-`uname -m` > docker-compose
+  - chmod +x docker-compose
+  - sudo mv docker-compose /usr/local/bin
+  - curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  - chmod +x ./kubectl
+  - sudo mv ./kubectl /usr/local/bin/kubectl
+  # Install AWS CLI with Python
+  - pip install -U pip
+  - pip install awscli
+  # Install AWS Credential
+  - chmod +x ./aws_credentials.sh
+  - sudo ./aws_credentials.sh
+  # Install AWS IAM Authenticator for AWS EKS
+  - curl -o aws-iam-authenticator https://amazon-eks.s3.us-west-2.amazonaws.com/1.15.10/2020-02-22/bin/linux/amd64/aws-iam-authenticator
+  - chmod +x ./aws-iam-authenticator
+  - sudo mv ./aws-iam-authenticator /usr/local/bin/aws-iam-authenticator
+  # Install AWS EKS CLI EKSCTL
+  - curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
+  - sudo mv /tmp/eksctl /usr/local/bin
+
+install:
+  # Login to docker hub
+  - echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+  # Build and Tag Docker Image for all services with Travis BUILD_ID
+  - cd $TRAVIS_BUILD_DIR/udacity-c3-restapi-feed
+  - docker build -t $DOCKER_BACKEND_FEED_IMAGE:$TRAVIS_BUILD_ID .
+  - docker push $DOCKER_BACKEND_FEED_IMAGE:$TRAVIS_BUILD_ID
+  - docker tag $DOCKER_BACKEND_FEED_IMAGE:$TRAVIS_BUILD_ID $DOCKER_BACKEND_FEED_IMAGE:latest
+  - docker push $DOCKER_BACKEND_FEED_IMAGE:latest
+
+  - cd $TRAVIS_BUILD_DIR/udacity-c3-restapi-user
+  - docker build -t $DOCKER_BACKEND_USER_IMAGE:$TRAVIS_BUILD_ID .
+  - docker push $DOCKER_BACKEND_USER_IMAGE:$TRAVIS_BUILD_ID
+  - docker tag $DOCKER_BACKEND_USER_IMAGE:$TRAVIS_BUILD_ID $DOCKER_BACKEND_USER_IMAGE:latest
+  - docker push $DOCKER_BACKEND_USER_IMAGE:latest
+
+  - cd $TRAVIS_BUILD_DIR/udacity-c3-frontend
+  - docker build -t $DOCKER_FRONTEND_IMAGE:$TRAVIS_BUILD_ID .
+  - docker push $DOCKER_FRONTEND_IMAGE:$TRAVIS_BUILD_ID
+  - docker tag $DOCKER_FRONTEND_IMAGE:$TRAVIS_BUILD_ID $DOCKER_FRONTEND_IMAGE:latest
+  - docker push $DOCKER_FRONTEND_IMAGE:latest
+
+  - cd $TRAVIS_BUILD_DIR/udacity-c3-deployment/docker
+  - docker build -t $DOCKER_REVERSEPROXY_IMAGE:$TRAVIS_BUILD_ID .
+  - docker push $DOCKER_REVERSEPROXY_IMAGE:$TRAVIS_BUILD_ID
+  - docker tag $DOCKER_REVERSEPROXY_IMAGE:$TRAVIS_BUILD_ID $DOCKER_REVERSEPROXY_IMAGE:latest
+  - docker push $DOCKER_REVERSEPROXY_IMAGE:latest
+  
+script: 
+  # Cluster Creation Or Rolling Update in create_cluster.sh script
+  - cd $TRAVIS_BUILD_DIR
+  - chmod +x ./create_cluster.sh
+  - travis_wait sudo ./create_cluster.sh
+
+  # Deploy Services
+  - cd $TRAVIS_BUILD_DIR/udacity-c3-deployment/k8s
+  - sudo kubectl apply -f backend-feed-service.yaml
+  - sudo kubectl apply -f backend-user-service.yaml
+  - sudo kubectl apply -f frontend-service.yaml
+  - sudo kubectl apply -f reverseproxy-service.yaml
+
+  # Wait for 2 minutes before all the pods running
+  - sleep 2m
+  - sudo kubectl get pods
